@@ -279,14 +279,14 @@ function draw() {
 
   spinAngle += 0.003;
 
-  // kick flash — brief neon burst on each kick
+  // kick flash — alpha fades smoothly to zero
   if (kickFlash > 0) {
     blendMode(SCREEN);
     noStroke();
-    fill(floor(curR * kickFlash * 0.75), floor(curG * kickFlash * 0.75), floor(curB * kickFlash * 0.75));
+    fill(curR, curG, curB, floor(kickFlash * 110));
     rect(-width / 2, -height / 2, width, height);
     blendMode(BLEND);
-    kickFlash = lerp(kickFlash, 0, 0.25);
+    kickFlash = lerp(kickFlash, 0, 0.22);
     if (kickFlash < 0.01) kickFlash = 0;
   }
 
