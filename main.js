@@ -15,10 +15,10 @@ let countdown = 0;
 let countdownAt = 0;
 
 let vizLayer;
+let mainCanvas; // direct ref to the p5 canvas element
 
 // camera
-let cameraEl = null;
-let cameraStream = null;
+let capture = null;
 let facingMode = 'user';
 
 // recording
@@ -42,35 +42,28 @@ const themes = {
 
 let neonColors = themes.neon;
 
-async function startCamera(mode) {
-  if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
-  try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: mode } },
-      audio: false,
-    });
-    cameraEl.srcObject = cameraStream;
-    cameraEl.play();
-    facingMode = mode;
-  } catch (e) {
-    console.warn('camera error:', e);
+function startCamera(mode) {
+  if (capture) {
+    // release the camera hardware before switching
+    const stream = capture.elt.srcObject;
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    capture.remove();
+    capture = null;
   }
+  capture = createCapture({ video: { facingMode: { ideal: mode } }, audio: false });
+  capture.size(800, 800);
+  capture.hide();
+  facingMode = mode;
 }
 
 function setup() {
   const cnv = createCanvas(800, 800);
   cnv.style('display', 'block');
-  fft = new p5.FFT(0.85, 2048);
+  mainCanvas = cnv.elt; // store direct ref so recording grabs the right canvas
 
+  fft = new p5.FFT(0.85, 2048);
   vizLayer = createGraphics(800, 800);
 
-  // hidden video element for camera feed
-  cameraEl = document.createElement('video');
-  cameraEl.setAttribute('autoplay', '');
-  cameraEl.setAttribute('playsinline', ''); // required on iOS
-  cameraEl.setAttribute('muted', '');
-  cameraEl.style.display = 'none';
-  document.body.appendChild(cameraEl);
   startCamera('user');
 
   // theme buttons
@@ -96,7 +89,6 @@ function setup() {
       sound.play();
       fft.setInput(sound);
       try { sound.output.connect(audioRecordDest); } catch (e) {}
-      // init seek slider range
       const slider = document.getElementById('seek-slider');
       slider.max = sound.duration();
       slider.value = 0;
@@ -129,10 +121,9 @@ function setup() {
 
 function startRecording() {
   if (isRecording) return;
-  const canvas = document.querySelector('canvas');
   let stream;
   try {
-    const videoStream = canvas.captureStream(30);
+    const videoStream = mainCanvas.captureStream(30); // use stored ref, not querySelector
     const tracks = [...videoStream.getVideoTracks()];
     if (audioRecordDest) tracks.push(...audioRecordDest.stream.getAudioTracks());
     stream = new MediaStream(tracks);
@@ -140,6 +131,7 @@ function startRecording() {
     alert('Recording not supported on this browser.');
     return;
   }
+
   const types = [
     'video/mp4;codecs=avc1,mp4a.40.2',
     'video/mp4;codecs=avc1',
@@ -150,6 +142,7 @@ function startRecording() {
     '',
   ];
   const mimeType = types.find(t => !t || MediaRecorder.isTypeSupported(t)) || '';
+
   recordChunks = [];
   try {
     recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
@@ -157,10 +150,10 @@ function startRecording() {
     alert('Recording not supported on this browser.');
     return;
   }
+
   recorder.ondataavailable = (e) => { if (e.data.size > 0) recordChunks.push(e.data); };
   recorder.onstop = () => {
     const actualType = recorder.mimeType || mimeType;
-    // default to mp4 — only use webm if we know for sure it's webm
     const ext = actualType.includes('webm') ? 'webm' : 'mp4';
     const blobType = actualType || (ext === 'mp4' ? 'video/mp4' : 'video/webm');
     const blob = new Blob(recordChunks, { type: blobType });
@@ -174,6 +167,7 @@ function startRecording() {
     document.getElementById('record-btn').textContent = '● rec';
     document.getElementById('record-btn').classList.remove('recording');
   };
+
   recorder.start();
   isRecording = true;
   recordStart = millis();
@@ -197,17 +191,16 @@ function draw() {
   background(11, 11, 13);
   translate(width / 2, height / 2);
 
-  // update seek slider position
-  if (!seekingSlider && sound && sound.isLoaded && sound.isLoaded()) {
-    const slider = document.getElementById('seek-slider');
-    slider.value = sound.currentTime();
+  // update seek slider
+  if (!seekingSlider && sound && sound.isPlaying()) {
+    document.getElementById('seek-slider').value = sound.currentTime();
   }
 
   // camera background
-  if (cameraEl && cameraEl.readyState >= 2) {
+  if (capture && capture.elt.readyState >= 2) {
     push();
-    if (facingMode === 'user') scale(-1, 1); // mirror front cam only
-    image(cameraEl, -width / 2, -height / 2, width, height);
+    if (facingMode === 'user') scale(-1, 1);
+    image(capture, -width / 2, -height / 2, width, height);
     pop();
   }
 
