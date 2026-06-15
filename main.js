@@ -215,12 +215,6 @@ function draw() {
   drawingContext.filter = 'none';
   image(cameraLayer, -width / 2, -height / 2);
 
-  // neon color wash over camera (reactive to current color)
-  blendMode(SCREEN);
-  noStroke();
-  fill(floor(curR * 0.4), floor(curG * 0.4), floor(curB * 0.4));
-  rect(-width / 2, -height / 2, width, height);
-  blendMode(BLEND);
 
   if (!sound || !sound.isPlaying()) {
     fill(255, 255, 255, 55);
