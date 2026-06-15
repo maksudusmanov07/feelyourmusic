@@ -192,28 +192,28 @@ function draw() {
     lastSliderUpdate = millis();
   }
 
-  // stop motion camera — freeze a new frame every 6 draw calls (~10fps)
+  // stop motion: freeze a new camera frame every 8 draw calls (~7fps)
   camTick++;
-  if (camTick % 6 === 0 && capture && capture.elt.readyState >= 2) {
+  if (camTick % 8 === 0 && capture && capture.elt.readyState >= 2) {
     cameraLayer.clear();
+    cameraLayer.push();
     if (facingMode === 'user') {
-      cameraLayer.push();
       cameraLayer.translate(width, 0);
       cameraLayer.scale(-1, 1);
-      cameraLayer.image(capture, 0, 0, width, height);
-      cameraLayer.pop();
-    } else {
-      cameraLayer.image(capture, 0, 0, width, height);
     }
+    cameraLayer.image(capture, 0, 0, width, height);
+    cameraLayer.pop();
   }
 
-  // draw camera: blurred neon glow underneath, then sharp on top
-  drawingContext.filter = 'blur(18px)';
-  tint(floor(curR), floor(curG), floor(curB), 90);
+  // draw camera
   image(cameraLayer, -width / 2, -height / 2);
-  noTint();
-  drawingContext.filter = 'none';
-  image(cameraLayer, -width / 2, -height / 2);
+
+  // neon glow overlay — SCREEN blend so it tints bright areas with the current color
+  blendMode(SCREEN);
+  noStroke();
+  fill(floor(curR * 0.45), floor(curG * 0.45), floor(curB * 0.45));
+  rect(-width / 2, -height / 2, width, height);
+  blendMode(BLEND);
 
   if (!sound || !sound.isPlaying()) {
     fill(255, 255, 255, 55);
