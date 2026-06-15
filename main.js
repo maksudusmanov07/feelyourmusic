@@ -140,7 +140,15 @@ function startRecording() {
     alert('Recording not supported on this browser.');
     return;
   }
-  const types = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4',''];
+  const types = [
+    'video/mp4;codecs=avc1,mp4a.40.2',
+    'video/mp4;codecs=avc1',
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+    '',
+  ];
   const mimeType = types.find(t => !t || MediaRecorder.isTypeSupported(t)) || '';
   recordChunks = [];
   try {
@@ -151,8 +159,9 @@ function startRecording() {
   }
   recorder.ondataavailable = (e) => { if (e.data.size > 0) recordChunks.push(e.data); };
   recorder.onstop = () => {
-    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-    const blob = new Blob(recordChunks, { type: mimeType || 'video/webm' });
+    const actualType = recorder.mimeType || mimeType;
+    const ext = actualType.includes('mp4') ? 'mp4' : 'webm';
+    const blob = new Blob(recordChunks, { type: actualType || 'video/webm' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
