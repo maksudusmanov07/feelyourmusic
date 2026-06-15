@@ -160,8 +160,10 @@ function startRecording() {
   recorder.ondataavailable = (e) => { if (e.data.size > 0) recordChunks.push(e.data); };
   recorder.onstop = () => {
     const actualType = recorder.mimeType || mimeType;
-    const ext = actualType.includes('mp4') ? 'mp4' : 'webm';
-    const blob = new Blob(recordChunks, { type: actualType || 'video/webm' });
+    // default to mp4 — only use webm if we know for sure it's webm
+    const ext = actualType.includes('webm') ? 'webm' : 'mp4';
+    const blobType = actualType || (ext === 'mp4' ? 'video/mp4' : 'video/webm');
+    const blob = new Blob(recordChunks, { type: blobType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
