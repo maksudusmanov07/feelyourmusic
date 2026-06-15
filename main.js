@@ -207,14 +207,23 @@ function draw() {
     cameraLayer.pop();
   }
 
-  // draw camera: 5px glow layer under sharp layer
+  // complementary color for camera tint (opposite of visualizer)
+  const compR = 255 - floor(curR);
+  const compG = 255 - floor(curG);
+  const compB = 255 - floor(curB);
+
+  // draw camera: blurred glow layer in complement color, then sharp on top
   drawingContext.filter = 'blur(5px)';
-  tint(255, 90);
+  tint(compR, compG, compB, 90);
   image(cameraLayer, -width / 2, -height / 2);
   noTint();
   drawingContext.filter = 'none';
   image(cameraLayer, -width / 2, -height / 2);
 
+  // subtle complement wash so camera reads distinctly from the visualizer lines
+  noStroke();
+  fill(compR, compG, compB, 45);
+  rect(-width / 2, -height / 2, width, height);
 
   if (!sound || !sound.isPlaying()) {
     fill(255, 255, 255, 55);
@@ -274,7 +283,7 @@ function draw() {
   if (kickFlash > 0) {
     blendMode(SCREEN);
     noStroke();
-    fill(floor(curR * kickFlash * 0.55), floor(curG * kickFlash * 0.55), floor(curB * kickFlash * 0.55));
+    fill(floor(curR * kickFlash * 0.75), floor(curG * kickFlash * 0.75), floor(curB * kickFlash * 0.75));
     rect(-width / 2, -height / 2, width, height);
     blendMode(BLEND);
     kickFlash = lerp(kickFlash, 0, 0.25);
@@ -288,13 +297,13 @@ function draw() {
   vizLayer.push();
   vizLayer.rotate(spinAngle);
 
-  const ringRadius = min(80 + bassEnv * 50 + transientEnv * 220, 260);
+  const ringRadius = min(70 + bassEnv * 40 + transientEnv * 90, 175);
 
   for (let i = 0; i < 180; i++) {
     const angle = (i / 180) * TWO_PI - HALF_PI;
     const binIndex = 1 + floor(map(i, 0, 180, 0, 500));
     const value = pow(spectrum[binIndex] / 255, 0.55);
-    const barH = value * (180 + transientEnv * 80); // bars also swell on kicks
+    const barH = value * (120 + transientEnv * 55);
     const x1 = cos(angle) * ringRadius;
     const y1 = sin(angle) * ringRadius;
     const x2 = cos(angle) * (ringRadius + barH);
