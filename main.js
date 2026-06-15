@@ -15,7 +15,9 @@ let countdown = 0;
 let countdownAt = 0;
 
 let vizLayer;
-let mainCanvas; // direct ref to the p5 canvas element
+let cameraLayer;   // frozen camera frame for stop motion
+let camTick = 0;
+let mainCanvas;
 
 // camera
 let capture = null;
@@ -30,7 +32,9 @@ const RECORD_DURATION = 15000;
 let audioRecordDest = null;
 
 // seek slider
+let seekSlider;
 let seekingSlider = false;
+let lastSliderUpdate = 0;
 
 const themes = {
   neon:   [[57,255,20],  [255,16,240],  [15,240,252],  [255,255,0],   [255,102,0]],
@@ -44,7 +48,6 @@ let neonColors = themes.neon;
 
 function startCamera(mode) {
   if (capture) {
-    // release the camera hardware before switching
     const stream = capture.elt.srcObject;
     if (stream) stream.getTracks().forEach(t => t.stop());
     capture.remove();
@@ -59,14 +62,14 @@ function startCamera(mode) {
 function setup() {
   const cnv = createCanvas(800, 800);
   cnv.style('display', 'block');
-  mainCanvas = cnv.elt; // store direct ref so recording grabs the right canvas
+  mainCanvas = cnv.elt;
 
   fft = new p5.FFT(0.85, 2048);
-  vizLayer = createGraphics(800, 800);
+  vizLayer    = createGraphics(800, 800);
+  cameraLayer = createGraphics(800, 800);
 
   startCamera('user');
 
-  // theme buttons
   document.querySelectorAll('.theme-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
@@ -75,7 +78,6 @@ function setup() {
     });
   });
 
-  // file input
   document.getElementById('fileInput').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -89,31 +91,27 @@ function setup() {
       sound.play();
       fft.setInput(sound);
       try { sound.output.connect(audioRecordDest); } catch (e) {}
-      const slider = document.getElementById('seek-slider');
-      slider.max = sound.duration();
-      slider.value = 0;
+      seekSlider.max = sound.duration();
+      seekSlider.value = 0;
     });
   });
 
-  // seek slider
-  const slider = document.getElementById('seek-slider');
-  slider.addEventListener('mousedown',  () => { seekingSlider = true; });
-  slider.addEventListener('touchstart', () => { seekingSlider = true; }, { passive: true });
-  slider.addEventListener('change', () => {
+  seekSlider = document.getElementById('seek-slider');
+  seekSlider.addEventListener('mousedown',  () => { seekingSlider = true; });
+  seekSlider.addEventListener('touchstart', () => { seekingSlider = true; }, { passive: true });
+  seekSlider.addEventListener('mouseup', () => {
     seekingSlider = false;
-    if (sound && sound.isLoaded()) sound.jump(parseFloat(slider.value));
+    if (sound && sound.isLoaded()) sound.jump(parseFloat(seekSlider.value));
   });
-  slider.addEventListener('touchend', () => {
+  seekSlider.addEventListener('touchend', () => {
     seekingSlider = false;
-    if (sound && sound.isLoaded()) sound.jump(parseFloat(slider.value));
+    if (sound && sound.isLoaded()) sound.jump(parseFloat(seekSlider.value));
   });
 
-  // camera flip
   document.getElementById('camera-btn').addEventListener('click', () => {
     startCamera(facingMode === 'user' ? 'environment' : 'user');
   });
 
-  // record button
   document.getElementById('record-btn').addEventListener('click', () => {
     isRecording ? stopRecording() : startRecording();
   });
@@ -123,7 +121,7 @@ function startRecording() {
   if (isRecording) return;
   let stream;
   try {
-    const videoStream = mainCanvas.captureStream(30); // use stored ref, not querySelector
+    const videoStream = mainCanvas.captureStream(30);
     const tracks = [...videoStream.getVideoTracks()];
     if (audioRecordDest) tracks.push(...audioRecordDest.stream.getAudioTracks());
     stream = new MediaStream(tracks);
@@ -131,7 +129,6 @@ function startRecording() {
     alert('Recording not supported on this browser.');
     return;
   }
-
   const types = [
     'video/mp4;codecs=avc1,mp4a.40.2',
     'video/mp4;codecs=avc1',
@@ -142,7 +139,6 @@ function startRecording() {
     '',
   ];
   const mimeType = types.find(t => !t || MediaRecorder.isTypeSupported(t)) || '';
-
   recordChunks = [];
   try {
     recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
@@ -150,7 +146,6 @@ function startRecording() {
     alert('Recording not supported on this browser.');
     return;
   }
-
   recorder.ondataavailable = (e) => { if (e.data.size > 0) recordChunks.push(e.data); };
   recorder.onstop = () => {
     const actualType = recorder.mimeType || mimeType;
@@ -167,7 +162,6 @@ function startRecording() {
     document.getElementById('record-btn').textContent = '● rec';
     document.getElementById('record-btn').classList.remove('recording');
   };
-
   recorder.start();
   isRecording = true;
   recordStart = millis();
@@ -191,18 +185,35 @@ function draw() {
   background(11, 11, 13);
   translate(width / 2, height / 2);
 
-  // update seek slider
-  if (!seekingSlider && sound && sound.isPlaying()) {
-    document.getElementById('seek-slider').value = sound.currentTime();
+  // update seek slider ~10x/sec to avoid jitter
+  if (!seekingSlider && sound && sound.isPlaying() && millis() - lastSliderUpdate > 100) {
+    const t = sound.currentTime();
+    if (isFinite(t) && t >= 0) seekSlider.value = t;
+    lastSliderUpdate = millis();
   }
 
-  // camera background
-  if (capture && capture.elt.readyState >= 2) {
-    push();
-    if (facingMode === 'user') scale(-1, 1);
-    image(capture, -width / 2, -height / 2, width, height);
-    pop();
+  // stop motion camera — freeze a new frame every 6 draw calls (~10fps)
+  camTick++;
+  if (camTick % 6 === 0 && capture && capture.elt.readyState >= 2) {
+    cameraLayer.clear();
+    if (facingMode === 'user') {
+      cameraLayer.push();
+      cameraLayer.translate(width, 0);
+      cameraLayer.scale(-1, 1);
+      cameraLayer.image(capture, 0, 0, width, height);
+      cameraLayer.pop();
+    } else {
+      cameraLayer.image(capture, 0, 0, width, height);
+    }
   }
+
+  // draw camera: blurred neon glow underneath, then sharp on top
+  drawingContext.filter = 'blur(18px)';
+  tint(floor(curR), floor(curG), floor(curB), 90);
+  image(cameraLayer, -width / 2, -height / 2);
+  noTint();
+  drawingContext.filter = 'none';
+  image(cameraLayer, -width / 2, -height / 2);
 
   if (!sound || !sound.isPlaying()) {
     fill(255, 255, 255, 55);
@@ -314,7 +325,6 @@ function draw() {
     text(trackName.toUpperCase(), 0, 360);
   }
 
-  // recording indicator
   if (isRecording) {
     const remaining = ceil((RECORD_DURATION - (millis() - recordStart)) / 1000);
     drawingContext.shadowBlur = 0;
@@ -325,7 +335,6 @@ function draw() {
     text(`● ${max(0, remaining)}s`, -width / 2 + 14, -height / 2 + 14);
   }
 
-  // photo countdown
   if (countdown > 0) {
     if (millis() - countdownAt >= 1000) {
       countdown--;
