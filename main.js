@@ -10,13 +10,13 @@ let curR = 57, curG = 255, curB = 20;
 let orbR = 15, orbG = 240, orbB = 252;
 let sparkles = [];
 let flashAlpha = 0;
+let kickFlash = 0;
 let trackName = '';
 let countdown = 0;
 let countdownAt = 0;
 
 let vizLayer;
-let cameraLayer;   // frozen camera frame for stop motion
-let camTick = 0;
+let cameraLayer;
 let mainCanvas;
 
 // camera
@@ -53,6 +53,7 @@ function startCamera(mode) {
     capture.remove();
     capture = null;
   }
+  if (cameraLayer) cameraLayer.clear(); // clear trail when switching cameras
   capture = createCapture({ video: { facingMode: { ideal: mode } }, audio: false });
   capture.size(800, 800);
   capture.hide();
@@ -185,33 +186,39 @@ function draw() {
   background(11, 11, 13);
   translate(width / 2, height / 2);
 
-  // update seek slider ~10x/sec to avoid jitter
+  // update seek slider ~10x/sec
   if (!seekingSlider && sound && sound.isPlaying() && millis() - lastSliderUpdate > 100) {
     const t = sound.currentTime();
     if (isFinite(t) && t >= 0) seekSlider.value = t;
     lastSliderUpdate = millis();
   }
 
-  // stop motion: freeze a new camera frame every 8 draw calls (~7fps)
-  camTick++;
-  if (camTick % 8 === 0 && capture && capture.elt.readyState >= 2) {
-    cameraLayer.clear();
+  // motion blur camera — draw new frame at 75% opacity over old frame (no clear)
+  // still frames = crisp, fast movement = soft trail
+  if (capture && capture.elt.readyState >= 2) {
     cameraLayer.push();
     if (facingMode === 'user') {
       cameraLayer.translate(width, 0);
       cameraLayer.scale(-1, 1);
     }
+    cameraLayer.tint(255, 190); // 75% new, 25% old = subtle motion trail
     cameraLayer.image(capture, 0, 0, width, height);
+    cameraLayer.noTint();
     cameraLayer.pop();
   }
 
-  // draw camera
+  // draw camera: 5px glow layer under sharp layer
+  drawingContext.filter = 'blur(5px)';
+  tint(255, 90);
+  image(cameraLayer, -width / 2, -height / 2);
+  noTint();
+  drawingContext.filter = 'none';
   image(cameraLayer, -width / 2, -height / 2);
 
-  // neon glow overlay — SCREEN blend so it tints bright areas with the current color
+  // neon color wash over camera (reactive to current color)
   blendMode(SCREEN);
   noStroke();
-  fill(floor(curR * 0.45), floor(curG * 0.45), floor(curB * 0.45));
+  fill(floor(curR * 0.4), floor(curG * 0.4), floor(curB * 0.4));
   rect(-width / 2, -height / 2, width, height);
   blendMode(BLEND);
 
@@ -231,15 +238,17 @@ function draw() {
   bassAvg = lerp(bassAvg, bassEnv, 0.003);
 
   const rawTransient = max(0, bassEnv - bassAvg);
-  transientEnv = lerp(transientEnv, rawTransient, rawTransient > transientEnv ? 0.5 : 0.09);
+  // faster attack (0.7) so it catches kicks sharper
+  transientEnv = lerp(transientEnv, rawTransient, rawTransient > transientEnv ? 0.7 : 0.08);
 
   const mid = fft.getEnergy('mid') / 255;
   melodyEnv = lerp(melodyEnv, mid, mid > melodyEnv ? 0.3 : 0.05);
 
-  const isKicking = transientEnv > 0.06;
+  const isKicking = transientEnv > 0.05;
   if (isKicking && !wasKicking) {
     colorIndex = (colorIndex + 1) % neonColors.length;
-    const spawnR = min(80 + bassEnv * 40 + transientEnv * 180, 175);
+    kickFlash = 1.0; // trigger kick flash
+    const spawnR = min(80 + bassEnv * 50 + transientEnv * 220, 260);
     for (let i = 0; i < 14; i++) {
       const a = random(TWO_PI);
       sparkles.push({
@@ -267,19 +276,31 @@ function draw() {
 
   spinAngle += 0.003;
 
+  // kick flash — brief neon burst on each kick
+  if (kickFlash > 0) {
+    blendMode(SCREEN);
+    noStroke();
+    fill(floor(curR * kickFlash * 0.55), floor(curG * kickFlash * 0.55), floor(curB * kickFlash * 0.55));
+    rect(-width / 2, -height / 2, width, height);
+    blendMode(BLEND);
+    kickFlash = lerp(kickFlash, 0, 0.25);
+    if (kickFlash < 0.01) kickFlash = 0;
+  }
+
+  // visualizer
   vizLayer.clear();
   vizLayer.push();
   vizLayer.translate(width / 2, height / 2);
   vizLayer.push();
   vizLayer.rotate(spinAngle);
 
-  const ringRadius = min(80 + bassEnv * 40 + transientEnv * 180, 175);
+  const ringRadius = min(80 + bassEnv * 50 + transientEnv * 220, 260);
 
   for (let i = 0; i < 180; i++) {
     const angle = (i / 180) * TWO_PI - HALF_PI;
     const binIndex = 1 + floor(map(i, 0, 180, 0, 500));
     const value = pow(spectrum[binIndex] / 255, 0.55);
-    const barH = value * 180;
+    const barH = value * (180 + transientEnv * 80); // bars also swell on kicks
     const x1 = cos(angle) * ringRadius;
     const y1 = sin(angle) * ringRadius;
     const x2 = cos(angle) * (ringRadius + barH);
@@ -287,7 +308,7 @@ function draw() {
     vizLayer.stroke(curR, curG, curB, (0.4 + value * 0.6) * 255);
     vizLayer.strokeWeight(2);
     vizLayer.drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
-    vizLayer.drawingContext.shadowBlur = value * 18;
+    vizLayer.drawingContext.shadowBlur = value * 28; // more glow
     vizLayer.line(x1, y1, x2, y2);
   }
 
@@ -298,14 +319,14 @@ function draw() {
     s.y += s.vy;
     s.life -= s.decay;
     vizLayer.drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
-    vizLayer.drawingContext.shadowBlur = 14;
+    vizLayer.drawingContext.shadowBlur = 20;
     vizLayer.fill(curR, curG, curB, s.life * 255);
     vizLayer.circle(s.x, s.y, s.size * 2);
   }
 
-  const orbRadius = 5 + melodyEnv * 26 + transientEnv * 30;
+  const orbRadius = 5 + melodyEnv * 26 + transientEnv * 50; // orb also reacts to kicks
   vizLayer.drawingContext.shadowColor = `rgb(${floor(orbR)},${floor(orbG)},${floor(orbB)})`;
-  vizLayer.drawingContext.shadowBlur = 10 + melodyEnv * 40;
+  vizLayer.drawingContext.shadowBlur = 15 + melodyEnv * 60;
   vizLayer.fill(orbR, orbG, orbB);
   vizLayer.circle(0, 0, orbRadius * 2);
 
@@ -313,6 +334,18 @@ function draw() {
   vizLayer.pop();
 
   drawingContext.shadowBlur = 0;
+
+  // dreamy bloom: draw vizLayer ghost slightly scaled up first
+  blendMode(SCREEN);
+  tint(255, 55);
+  push();
+  scale(1.012);
+  image(vizLayer, -width / 2, -height / 2);
+  pop();
+  noTint();
+  blendMode(BLEND);
+
+  // main visualizer
   image(vizLayer, -width / 2, -height / 2);
 
   if (trackName) {
