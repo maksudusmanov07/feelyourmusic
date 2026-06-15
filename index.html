@@ -10,7 +10,21 @@
 </head>
 <body>
   <h1>feel your music</h1>
-  <input type="file" id="fileInput" accept="audio/*" />
+  <div id="controls">
+    <input type="file" id="fileInput" accept="audio/*" />
+    <div id="themes">
+      <button class="theme-btn active" data-theme="neon"   style="background:#39ff14"></button>
+      <button class="theme-btn"        data-theme="fire"   style="background:#ff3c00"></button>
+      <button class="theme-btn"        data-theme="ocean"  style="background:#00dcff"></button>
+      <button class="theme-btn"        data-theme="purple" style="background:#b400ff"></button>
+      <button class="theme-btn"        data-theme="mono"   style="background:#ffffff"></button>
+    </div>
+    <input type="range" id="seek-slider" min="0" max="100" value="0" step="0.1" />
+    <div id="action-row">
+      <button id="camera-btn">flip cam</button>
+      <button id="record-btn">● rec</button>
+    </div>
+  </div>
   <script src="main.js"></script>
 </body>
 </html>

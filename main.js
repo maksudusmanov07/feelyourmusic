@@ -9,85 +9,176 @@ let wasKicking = false;
 let curR = 57, curG = 255, curB = 20;
 let orbR = 15, orbG = 240, orbB = 252;
 let sparkles = [];
+let flashAlpha = 0;
+let trackName = '';
+let countdown = 0;
+let countdownAt = 0;
 
-// game
-let gameNotes = [];
-let score = 0;
-let combo = 0;
-let laneFlash = [0, 0, 0, 0];
-let feedbackText = '';
-let feedbackAlpha = 0;
-let feedbackColor = [255, 255, 255];
+let vizLayer;
 
-const HIT_RADIUS = 290;
-const NOTE_SPEED = 1.6;
-const HIT_WINDOW = 24;
+// camera
+let cameraEl = null;
+let cameraStream = null;
+let facingMode = 'user';
 
-// 4 hit zones arced across the lower half, left to right = A S D F
-const lanes = [
-  { key: 'a', angle: (125 * PI) / 180 },
-  { key: 's', angle: (105 * PI) / 180 },
-  { key: 'd', angle: (75 * PI) / 180 },
-  { key: 'f', angle: (55 * PI) / 180 },
-];
+// recording
+let isRecording = false;
+let recorder = null;
+let recordChunks = [];
+let recordStart = 0;
+const RECORD_DURATION = 15000;
+let audioRecordDest = null;
 
-const neonColors = [
-  [57, 255, 20],
-  [255, 16, 240],
-  [15, 240, 252],
-  [255, 255, 0],
-  [255, 102, 0],
-];
+// seek slider
+let seekingSlider = false;
+
+const themes = {
+  neon:   [[57,255,20],  [255,16,240],  [15,240,252],  [255,255,0],   [255,102,0]],
+  fire:   [[255,60,0],   [255,160,0],   [255,220,20],  [220,20,20],   [255,100,0]],
+  ocean:  [[0,220,255],  [0,120,255],   [0,255,190],   [80,180,255],  [0,180,220]],
+  purple: [[180,0,255],  [255,0,200],   [140,0,255],   [255,80,255],  [100,0,220]],
+  mono:   [[255,255,255],[210,210,210], [240,240,240],  [180,180,180], [225,225,225]],
+};
+
+let neonColors = themes.neon;
+
+async function startCamera(mode) {
+  if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: mode } },
+      audio: false,
+    });
+    cameraEl.srcObject = cameraStream;
+    cameraEl.play();
+    facingMode = mode;
+  } catch (e) {
+    console.warn('camera error:', e);
+  }
+}
 
 function setup() {
   const cnv = createCanvas(800, 800);
   cnv.style('display', 'block');
   fft = new p5.FFT(0.85, 2048);
 
+  vizLayer = createGraphics(800, 800);
+
+  // hidden video element for camera feed
+  cameraEl = document.createElement('video');
+  cameraEl.setAttribute('autoplay', '');
+  cameraEl.setAttribute('playsinline', ''); // required on iOS
+  cameraEl.setAttribute('muted', '');
+  cameraEl.style.display = 'none';
+  document.body.appendChild(cameraEl);
+  startCamera('user');
+
+  // theme buttons
+  document.querySelectorAll('.theme-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      neonColors = themes[btn.dataset.theme];
+    });
+  });
+
+  // file input
   document.getElementById('fileInput').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    trackName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
     const url = URL.createObjectURL(file);
     if (sound) sound.stop();
     userStartAudio();
+    const audioCtx = getAudioContext();
+    if (!audioRecordDest) audioRecordDest = audioCtx.createMediaStreamDestination();
     sound = loadSound(url, () => {
       sound.play();
       fft.setInput(sound);
+      try { sound.output.connect(audioRecordDest); } catch (e) {}
+      // init seek slider range
+      const slider = document.getElementById('seek-slider');
+      slider.max = sound.duration();
+      slider.value = 0;
     });
+  });
+
+  // seek slider
+  const slider = document.getElementById('seek-slider');
+  slider.addEventListener('mousedown',  () => { seekingSlider = true; });
+  slider.addEventListener('touchstart', () => { seekingSlider = true; }, { passive: true });
+  slider.addEventListener('change', () => {
+    seekingSlider = false;
+    if (sound && sound.isLoaded()) sound.jump(parseFloat(slider.value));
+  });
+  slider.addEventListener('touchend', () => {
+    seekingSlider = false;
+    if (sound && sound.isLoaded()) sound.jump(parseFloat(slider.value));
+  });
+
+  // camera flip
+  document.getElementById('camera-btn').addEventListener('click', () => {
+    startCamera(facingMode === 'user' ? 'environment' : 'user');
+  });
+
+  // record button
+  document.getElementById('record-btn').addEventListener('click', () => {
+    isRecording ? stopRecording() : startRecording();
   });
 }
 
-function keyPressed() {
-  const k = key.toLowerCase();
-  const laneIndex = lanes.findIndex(l => l.key === k);
-  if (laneIndex === -1) return;
-
-  laneFlash[laneIndex] = 255;
-
-  let best = null;
-  let bestDist = Infinity;
-  for (const n of gameNotes) {
-    if (n.lane === laneIndex && !n.hit && !n.missed) {
-      const dist = abs(n.r - HIT_RADIUS);
-      if (dist < HIT_WINDOW && dist < bestDist) {
-        best = n;
-        bestDist = dist;
-      }
-    }
+function startRecording() {
+  if (isRecording) return;
+  const canvas = document.querySelector('canvas');
+  let stream;
+  try {
+    const videoStream = canvas.captureStream(30);
+    const tracks = [...videoStream.getVideoTracks()];
+    if (audioRecordDest) tracks.push(...audioRecordDest.stream.getAudioTracks());
+    stream = new MediaStream(tracks);
+  } catch (e) {
+    alert('Recording not supported on this browser.');
+    return;
   }
+  const types = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4',''];
+  const mimeType = types.find(t => !t || MediaRecorder.isTypeSupported(t)) || '';
+  recordChunks = [];
+  try {
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+  } catch (e) {
+    alert('Recording not supported on this browser.');
+    return;
+  }
+  recorder.ondataavailable = (e) => { if (e.data.size > 0) recordChunks.push(e.data); };
+  recorder.onstop = () => {
+    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+    const blob = new Blob(recordChunks, { type: mimeType || 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `feelyourmusic.${ext}`;
+    a.click();
+    URL.revokeObjectURL(url);
+    isRecording = false;
+    document.getElementById('record-btn').textContent = '● rec';
+    document.getElementById('record-btn').classList.remove('recording');
+  };
+  recorder.start();
+  isRecording = true;
+  recordStart = millis();
+  document.getElementById('record-btn').textContent = '■ stop';
+  document.getElementById('record-btn').classList.add('recording');
+  setTimeout(() => { if (recorder && recorder.state === 'recording') stopRecording(); }, RECORD_DURATION);
+}
 
-  if (best) {
-    best.hit = true;
-    combo++;
-    score += 100 + combo * 10;
-    feedbackText = bestDist < 10 ? 'PERFECT' : 'GOOD';
-    feedbackColor = bestDist < 10 ? [255, 255, 0] : [100, 255, 100];
-    feedbackAlpha = 255;
-  } else {
-    combo = 0;
-    feedbackText = 'MISS';
-    feedbackColor = [255, 60, 60];
-    feedbackAlpha = 255;
+function stopRecording() {
+  if (recorder && recorder.state === 'recording') recorder.stop();
+}
+
+function keyPressed() {
+  if (key === ' ' && countdown === 0) {
+    countdown = 5;
+    countdownAt = millis();
   }
 }
 
@@ -95,7 +186,28 @@ function draw() {
   background(11, 11, 13);
   translate(width / 2, height / 2);
 
-  if (!sound || !sound.isPlaying()) return;
+  // update seek slider position
+  if (!seekingSlider && sound && sound.isLoaded && sound.isLoaded()) {
+    const slider = document.getElementById('seek-slider');
+    slider.value = sound.currentTime();
+  }
+
+  // camera background
+  if (cameraEl && cameraEl.readyState >= 2) {
+    push();
+    if (facingMode === 'user') scale(-1, 1); // mirror front cam only
+    image(cameraEl, -width / 2, -height / 2, width, height);
+    pop();
+  }
+
+  if (!sound || !sound.isPlaying()) {
+    fill(255, 255, 255, 55);
+    noStroke();
+    textAlign(CENTER, CENTER);
+    textSize(13);
+    text('load a track', 0, 340);
+    return;
+  }
 
   const spectrum = fft.analyze();
 
@@ -112,18 +224,12 @@ function draw() {
   const isKicking = transientEnv > 0.06;
   if (isKicking && !wasKicking) {
     colorIndex = (colorIndex + 1) % neonColors.length;
-
-    // spawn note in random lane
     const spawnR = min(80 + bassEnv * 40 + transientEnv * 180, 175);
-    gameNotes.push({ lane: floor(random(4)), r: spawnR, hit: false, missed: false });
-
-    // sparkles from bar tips
     for (let i = 0; i < 14; i++) {
       const a = random(TWO_PI);
-      const spawnRadius = spawnR + random(30, 100);
       sparkles.push({
-        x: cos(a) * spawnRadius,
-        y: sin(a) * spawnRadius,
+        x: cos(a) * (spawnR + random(30, 100)),
+        y: sin(a) * (spawnR + random(30, 100)),
         vx: cos(a) * random(2, 5),
         vy: sin(a) * random(2, 5),
         life: 1.0,
@@ -146,9 +252,11 @@ function draw() {
 
   spinAngle += 0.003;
 
-  // --- rotated visualizer ---
-  push();
-  rotate(spinAngle);
+  vizLayer.clear();
+  vizLayer.push();
+  vizLayer.translate(width / 2, height / 2);
+  vizLayer.push();
+  vizLayer.rotate(spinAngle);
 
   const ringRadius = min(80 + bassEnv * 40 + transientEnv * 180, 175);
 
@@ -157,107 +265,88 @@ function draw() {
     const binIndex = 1 + floor(map(i, 0, 180, 0, 500));
     const value = pow(spectrum[binIndex] / 255, 0.55);
     const barH = value * 180;
-
     const x1 = cos(angle) * ringRadius;
     const y1 = sin(angle) * ringRadius;
     const x2 = cos(angle) * (ringRadius + barH);
     const y2 = sin(angle) * (ringRadius + barH);
-
-    stroke(curR, curG, curB, (0.4 + value * 0.6) * 255);
-    strokeWeight(2);
-    drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
-    drawingContext.shadowBlur = value * 18;
-    line(x1, y1, x2, y2);
+    vizLayer.stroke(curR, curG, curB, (0.4 + value * 0.6) * 255);
+    vizLayer.strokeWeight(2);
+    vizLayer.drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
+    vizLayer.drawingContext.shadowBlur = value * 18;
+    vizLayer.line(x1, y1, x2, y2);
   }
 
-  noStroke();
+  vizLayer.noStroke();
   sparkles = sparkles.filter(s => s.life > 0);
   for (const s of sparkles) {
     s.x += s.vx;
     s.y += s.vy;
     s.life -= s.decay;
-    drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
-    drawingContext.shadowBlur = 14;
-    fill(curR, curG, curB, s.life * 255);
-    circle(s.x, s.y, s.size * 2);
+    vizLayer.drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
+    vizLayer.drawingContext.shadowBlur = 14;
+    vizLayer.fill(curR, curG, curB, s.life * 255);
+    vizLayer.circle(s.x, s.y, s.size * 2);
   }
 
   const orbRadius = 5 + melodyEnv * 26 + transientEnv * 30;
-  drawingContext.shadowColor = `rgb(${floor(orbR)},${floor(orbG)},${floor(orbB)})`;
-  drawingContext.shadowBlur = 10 + melodyEnv * 40;
-  fill(orbR, orbG, orbB);
-  circle(0, 0, orbRadius * 2);
+  vizLayer.drawingContext.shadowColor = `rgb(${floor(orbR)},${floor(orbG)},${floor(orbB)})`;
+  vizLayer.drawingContext.shadowBlur = 10 + melodyEnv * 40;
+  vizLayer.fill(orbR, orbG, orbB);
+  vizLayer.circle(0, 0, orbRadius * 2);
 
-  pop();
+  vizLayer.pop();
+  vizLayer.pop();
 
-  // --- game layer (non-rotating) ---
   drawingContext.shadowBlur = 0;
+  image(vizLayer, -width / 2, -height / 2);
 
-  // move notes + detect misses
-  for (const n of gameNotes) {
-    n.r += NOTE_SPEED;
-    if (!n.hit && !n.missed && n.r > HIT_RADIUS + HIT_WINDOW) {
-      n.missed = true;
-      combo = 0;
-      feedbackText = 'MISS';
-      feedbackColor = [255, 60, 60];
-      feedbackAlpha = 255;
-    }
-  }
-  gameNotes = gameNotes.filter(n => n.r < HIT_RADIUS + 50);
-
-  // draw notes
-  noStroke();
-  for (const n of gameNotes) {
-    if (n.missed) continue;
-    const laneAngle = lanes[n.lane].angle;
-    const nx = cos(laneAngle) * n.r;
-    const ny = sin(laneAngle) * n.r;
-    const noteAlpha = n.hit ? max(0, (1 - (n.r - HIT_RADIUS) / 40) * 255) : 255;
+  if (trackName) {
     drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
-    drawingContext.shadowBlur = 16;
-    fill(curR, curG, curB, noteAlpha);
-    circle(nx, ny, 22);
+    drawingContext.shadowBlur = 8;
+    noStroke();
+    fill(255, 255, 255, 200);
+    textAlign(CENTER, CENTER);
+    textSize(13);
+    text(trackName.toUpperCase(), 0, 360);
   }
 
-  // draw hit zones
-  laneFlash = laneFlash.map(f => max(0, f - 9));
-  for (let i = 0; i < lanes.length; i++) {
-    const lane = lanes[i];
-    const hx = cos(lane.angle) * HIT_RADIUS;
-    const hy = sin(lane.angle) * HIT_RADIUS;
-
-    drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
-    drawingContext.shadowBlur = 6 + laneFlash[i] * 0.08;
-    stroke(curR, curG, curB, 90 + laneFlash[i] * 0.65);
-    strokeWeight(2);
-    noFill();
-    circle(hx, hy, 34);
-
+  // recording indicator
+  if (isRecording) {
+    const remaining = ceil((RECORD_DURATION - (millis() - recordStart)) / 1000);
     drawingContext.shadowBlur = 0;
     noStroke();
-    fill(255, 255, 255, 130);
-    textAlign(CENTER, CENTER);
-    textSize(11);
-    text(lane.key.toUpperCase(), cos(lane.angle) * (HIT_RADIUS + 26), sin(lane.angle) * (HIT_RADIUS + 26));
+    fill(255, 60, 60, 180 + sin(frameCount * 0.15) * 75);
+    textAlign(LEFT, TOP);
+    textSize(12);
+    text(`● ${max(0, remaining)}s`, -width / 2 + 14, -height / 2 + 14);
   }
 
-  // score + combo
-  drawingContext.shadowBlur = 0;
-  noStroke();
-  fill(255, 255, 255, 160);
-  textAlign(LEFT, TOP);
-  textSize(13);
-  text(`score  ${score}`, -385, -390);
-  text(`combo  x${combo}`, -385, -370);
+  // photo countdown
+  if (countdown > 0) {
+    if (millis() - countdownAt >= 1000) {
+      countdown--;
+      countdownAt = millis();
+      if (countdown === 0) {
+        flashAlpha = 255;
+        saveCanvas('feelyourmusic', 'png');
+      }
+    }
+    if (countdown > 0) {
+      drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
+      drawingContext.shadowBlur = 30;
+      noStroke();
+      fill(255, 255, 255, 230);
+      textAlign(CENTER, CENTER);
+      textSize(120);
+      text(countdown, 0, 0);
+      drawingContext.shadowBlur = 0;
+    }
+  }
 
-  // feedback
-  if (feedbackAlpha > 0) {
-    drawingContext.shadowBlur = 0;
-    fill(feedbackColor[0], feedbackColor[1], feedbackColor[2], feedbackAlpha);
-    textAlign(CENTER, CENTER);
-    textSize(20);
-    text(feedbackText, 0, -215);
-    feedbackAlpha = max(0, feedbackAlpha - 7);
+  if (flashAlpha > 0) {
+    noStroke();
+    fill(255, 255, 255, flashAlpha);
+    rect(-width / 2, -height / 2, width, height);
+    flashAlpha = max(0, flashAlpha - 18);
   }
 }
