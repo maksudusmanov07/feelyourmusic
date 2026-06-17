@@ -65,7 +65,7 @@ function setup() {
   cnv.style('display', 'block');
   mainCanvas = cnv.elt;
 
-  fft = new p5.FFT(0.85, 2048);
+  fft = new p5.FFT(0.75, 2048);
   vizLayer    = createGraphics(800, 800);
   cameraLayer = createGraphics(800, 800);
 
@@ -237,7 +237,7 @@ function draw() {
   const spectrum = fft.analyze();
 
   const bass = fft.getEnergy('bass') / 255;
-  bassEnv = lerp(bassEnv, bass, bass > bassEnv ? 0.35 : 0.04);
+  bassEnv = lerp(bassEnv, bass, bass > bassEnv ? 0.45 : 0.04);
   bassAvg = lerp(bassAvg, bassEnv, 0.003);
 
   const rawTransient = max(0, bassEnv - bassAvg);
@@ -290,20 +290,23 @@ function draw() {
     if (kickFlash < 0.01) kickFlash = 0;
   }
 
-  // visualizer
-  vizLayer.clear();
+  // visualizer — fade existing pixels instead of clearing (feedback trail)
+  vizLayer.drawingContext.globalCompositeOperation = 'destination-out';
+  vizLayer.drawingContext.fillStyle = 'rgba(255,255,255,0.12)';
+  vizLayer.drawingContext.fillRect(0, 0, 800, 800);
+  vizLayer.drawingContext.globalCompositeOperation = 'source-over';
   vizLayer.push();
   vizLayer.translate(width / 2, height / 2);
   vizLayer.push();
   vizLayer.rotate(spinAngle);
 
-  const ringRadius = min(70 + bassEnv * 40 + transientEnv * 90, 175);
+  const ringRadius = min(70 + bassEnv * 55 + transientEnv * 110, 190);
 
   for (let i = 0; i < 180; i++) {
     const angle = (i / 180) * TWO_PI - HALF_PI;
     const binIndex = 1 + floor(map(i, 0, 180, 0, 500));
-    const value = pow(spectrum[binIndex] / 255, 0.55);
-    const barH = value * (120 + transientEnv * 55);
+    const value = pow(spectrum[binIndex] / 255, 0.65);
+    const barH = value * (145 + transientEnv * 70);
     const x1 = cos(angle) * ringRadius;
     const y1 = sin(angle) * ringRadius;
     const x2 = cos(angle) * (ringRadius + barH);
@@ -338,18 +341,37 @@ function draw() {
 
   drawingContext.shadowBlur = 0;
 
-  // dreamy bloom: draw vizLayer ghost slightly scaled up first
+  // chromatic aberration + bloom
+  const aberPx = 2 + bassEnv * 6;
   blendMode(SCREEN);
-  tint(255, 55);
-  push();
-  scale(1.012);
-  image(vizLayer, -width / 2, -height / 2);
-  pop();
+  tint(255, 0, 0, 60);
+  image(vizLayer, -width / 2 + aberPx, -height / 2);
+  tint(0, 0, 255, 60);
+  image(vizLayer, -width / 2 - aberPx, -height / 2);
+  tint(255, 50);
+  push(); scale(1.012); image(vizLayer, -width / 2, -height / 2); pop();
   noTint();
   blendMode(BLEND);
 
   // main visualizer
   image(vizLayer, -width / 2, -height / 2);
+
+  // vignette
+  const vig = drawingContext.createRadialGradient(0, 0, width * 0.28, 0, 0, width * 0.68);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.72)');
+  drawingContext.fillStyle = vig;
+  drawingContext.fillRect(-width / 2, -height / 2, width, height);
+
+  // film grain
+  drawingContext.fillStyle = 'rgba(255,255,255,0.06)';
+  for (let i = 0; i < 350; i++) {
+    drawingContext.fillRect(
+      Math.random() * width - width / 2,
+      Math.random() * height - height / 2,
+      1, 1
+    );
+  }
 
   if (trackName) {
     drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
