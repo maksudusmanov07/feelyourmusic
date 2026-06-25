@@ -16,25 +16,6 @@ let countdown = 0;
 let countdownAt = 0;
 
 let vizLayer;
-let cameraLayer;
-let mainCanvas;
-
-// camera
-let capture = null;
-let facingMode = 'user';
-
-// recording
-let isRecording = false;
-let recorder = null;
-let recordChunks = [];
-let recordStart = 0;
-const RECORD_DURATION = 15000;
-let audioRecordDest = null;
-
-// seek slider
-let seekSlider;
-let seekingSlider = false;
-let lastSliderUpdate = 0;
 
 const themes = {
   neon:   [[57,255,20],  [255,16,240],  [15,240,252],  [255,255,0],   [255,102,0]],
@@ -46,30 +27,12 @@ const themes = {
 
 let neonColors = themes.neon;
 
-function startCamera(mode) {
-  if (capture) {
-    const stream = capture.elt.srcObject;
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    capture.remove();
-    capture = null;
-  }
-  if (cameraLayer) cameraLayer.clear(); // clear trail when switching cameras
-  capture = createCapture({ video: { facingMode: { ideal: mode } }, audio: false });
-  capture.size(800, 800);
-  capture.hide();
-  facingMode = mode;
-}
-
 function setup() {
   const cnv = createCanvas(800, 800);
   cnv.style('display', 'block');
-  mainCanvas = cnv.elt;
 
   fft = new p5.FFT(0.75, 2048);
-  vizLayer    = createGraphics(800, 800);
-  cameraLayer = createGraphics(800, 800);
-
-  startCamera('user');
+  vizLayer = createGraphics(800, 800);
 
   document.querySelectorAll('.theme-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -86,93 +49,11 @@ function setup() {
     const url = URL.createObjectURL(file);
     if (sound) sound.stop();
     userStartAudio();
-    const audioCtx = getAudioContext();
-    if (!audioRecordDest) audioRecordDest = audioCtx.createMediaStreamDestination();
     sound = loadSound(url, () => {
       sound.play();
       fft.setInput(sound);
-      try { sound.output.connect(audioRecordDest); } catch (e) {}
-      seekSlider.max = sound.duration();
-      seekSlider.value = 0;
     });
   });
-
-  seekSlider = document.getElementById('seek-slider');
-  seekSlider.addEventListener('mousedown',  () => { seekingSlider = true; });
-  seekSlider.addEventListener('touchstart', () => { seekingSlider = true; }, { passive: true });
-  seekSlider.addEventListener('mouseup', () => {
-    seekingSlider = false;
-    if (sound && sound.isLoaded()) sound.jump(parseFloat(seekSlider.value));
-  });
-  seekSlider.addEventListener('touchend', () => {
-    seekingSlider = false;
-    if (sound && sound.isLoaded()) sound.jump(parseFloat(seekSlider.value));
-  });
-
-  document.getElementById('camera-btn').addEventListener('click', () => {
-    startCamera(facingMode === 'user' ? 'environment' : 'user');
-  });
-
-  document.getElementById('record-btn').addEventListener('click', () => {
-    isRecording ? stopRecording() : startRecording();
-  });
-}
-
-function startRecording() {
-  if (isRecording) return;
-  let stream;
-  try {
-    const videoStream = mainCanvas.captureStream(30);
-    const tracks = [...videoStream.getVideoTracks()];
-    if (audioRecordDest) tracks.push(...audioRecordDest.stream.getAudioTracks());
-    stream = new MediaStream(tracks);
-  } catch (e) {
-    alert('Recording not supported on this browser.');
-    return;
-  }
-  const types = [
-    'video/mp4;codecs=avc1,mp4a.40.2',
-    'video/mp4;codecs=avc1',
-    'video/mp4',
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm',
-    '',
-  ];
-  const mimeType = types.find(t => !t || MediaRecorder.isTypeSupported(t)) || '';
-  recordChunks = [];
-  try {
-    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
-  } catch (e) {
-    alert('Recording not supported on this browser.');
-    return;
-  }
-  recorder.ondataavailable = (e) => { if (e.data.size > 0) recordChunks.push(e.data); };
-  recorder.onstop = () => {
-    const actualType = recorder.mimeType || mimeType;
-    const ext = actualType.includes('webm') ? 'webm' : 'mp4';
-    const blobType = actualType || (ext === 'mp4' ? 'video/mp4' : 'video/webm');
-    const blob = new Blob(recordChunks, { type: blobType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `feelyourmusic.${ext}`;
-    a.click();
-    URL.revokeObjectURL(url);
-    isRecording = false;
-    document.getElementById('record-btn').textContent = '● rec';
-    document.getElementById('record-btn').classList.remove('recording');
-  };
-  recorder.start();
-  isRecording = true;
-  recordStart = millis();
-  document.getElementById('record-btn').textContent = '■ stop';
-  document.getElementById('record-btn').classList.add('recording');
-  setTimeout(() => { if (recorder && recorder.state === 'recording') stopRecording(); }, RECORD_DURATION);
-}
-
-function stopRecording() {
-  if (recorder && recorder.state === 'recording') recorder.stop();
 }
 
 function keyPressed() {
@@ -185,45 +66,6 @@ function keyPressed() {
 function draw() {
   background(11, 11, 13);
   translate(width / 2, height / 2);
-
-  // update seek slider ~10x/sec
-  if (!seekingSlider && sound && sound.isPlaying() && millis() - lastSliderUpdate > 100) {
-    const t = sound.currentTime();
-    if (isFinite(t) && t >= 0) seekSlider.value = t;
-    lastSliderUpdate = millis();
-  }
-
-  // motion blur camera — draw new frame at 75% opacity over old frame (no clear)
-  // still frames = crisp, fast movement = soft trail
-  if (capture && capture.elt.readyState >= 2) {
-    cameraLayer.push();
-    if (facingMode === 'user') {
-      cameraLayer.translate(width, 0);
-      cameraLayer.scale(-1, 1);
-    }
-    cameraLayer.tint(255, 190); // 75% new, 25% old = subtle motion trail
-    cameraLayer.image(capture, 0, 0, width, height);
-    cameraLayer.noTint();
-    cameraLayer.pop();
-  }
-
-  // complementary color for camera tint (opposite of visualizer)
-  const compR = 255 - floor(curR);
-  const compG = 255 - floor(curG);
-  const compB = 255 - floor(curB);
-
-  // draw camera: blurred glow layer in complement color, then sharp on top
-  drawingContext.filter = 'blur(5px)';
-  tint(compR, compG, compB, 90);
-  image(cameraLayer, -width / 2, -height / 2);
-  noTint();
-  drawingContext.filter = 'none';
-  image(cameraLayer, -width / 2, -height / 2);
-
-  // subtle complement wash so camera reads distinctly from the visualizer lines
-  noStroke();
-  fill(compR, compG, compB, 45);
-  rect(-width / 2, -height / 2, width, height);
 
   if (!sound || !sound.isPlaying()) {
     fill(255, 255, 255, 55);
@@ -241,7 +83,6 @@ function draw() {
   bassAvg = lerp(bassAvg, bassEnv, 0.003);
 
   const rawTransient = max(0, bassEnv - bassAvg);
-  // faster attack (0.7) so it catches kicks sharper
   transientEnv = lerp(transientEnv, rawTransient, rawTransient > transientEnv ? 0.7 : 0.08);
 
   const mid = fft.getEnergy('mid') / 255;
@@ -250,8 +91,8 @@ function draw() {
   const isKicking = transientEnv > 0.05;
   if (isKicking && !wasKicking) {
     colorIndex = (colorIndex + 1) % neonColors.length;
-    kickFlash = 1.0; // trigger kick flash
-    const spawnR = min(80 + bassEnv * 50 + transientEnv * 220, 260);
+    kickFlash = 1.0;
+    const spawnR = min(70 + bassEnv * 55 + transientEnv * 110, 190);
     for (let i = 0; i < 14; i++) {
       const a = random(TWO_PI);
       sparkles.push({
@@ -279,7 +120,7 @@ function draw() {
 
   spinAngle += 0.003;
 
-  // kick flash — alpha fades smoothly to zero
+  // kick flash — alpha fades smoothly
   if (kickFlash > 0) {
     blendMode(SCREEN);
     noStroke();
@@ -290,7 +131,7 @@ function draw() {
     if (kickFlash < 0.01) kickFlash = 0;
   }
 
-  // visualizer — fade existing pixels instead of clearing (feedback trail)
+  // feedback trail — fade existing pixels instead of clearing
   vizLayer.drawingContext.globalCompositeOperation = 'destination-out';
   vizLayer.drawingContext.fillStyle = 'rgba(255,255,255,0.12)';
   vizLayer.drawingContext.fillRect(0, 0, 800, 800);
@@ -314,7 +155,7 @@ function draw() {
     vizLayer.stroke(curR, curG, curB, (0.4 + value * 0.6) * 255);
     vizLayer.strokeWeight(2);
     vizLayer.drawingContext.shadowColor = `rgb(${floor(curR)},${floor(curG)},${floor(curB)})`;
-    vizLayer.drawingContext.shadowBlur = value * 28; // more glow
+    vizLayer.drawingContext.shadowBlur = value * 28;
     vizLayer.line(x1, y1, x2, y2);
   }
 
@@ -330,7 +171,7 @@ function draw() {
     vizLayer.circle(s.x, s.y, s.size * 2);
   }
 
-  const orbRadius = 5 + melodyEnv * 26 + transientEnv * 50; // orb also reacts to kicks
+  const orbRadius = 5 + melodyEnv * 26 + transientEnv * 50;
   vizLayer.drawingContext.shadowColor = `rgb(${floor(orbR)},${floor(orbG)},${floor(orbB)})`;
   vizLayer.drawingContext.shadowBlur = 15 + melodyEnv * 60;
   vizLayer.fill(orbR, orbG, orbB);
@@ -353,7 +194,6 @@ function draw() {
   noTint();
   blendMode(BLEND);
 
-  // main visualizer
   image(vizLayer, -width / 2, -height / 2);
 
   // vignette
@@ -381,16 +221,6 @@ function draw() {
     textAlign(CENTER, CENTER);
     textSize(13);
     text(trackName.toUpperCase(), 0, 360);
-  }
-
-  if (isRecording) {
-    const remaining = ceil((RECORD_DURATION - (millis() - recordStart)) / 1000);
-    drawingContext.shadowBlur = 0;
-    noStroke();
-    fill(255, 60, 60, 180 + sin(frameCount * 0.15) * 75);
-    textAlign(LEFT, TOP);
-    textSize(12);
-    text(`● ${max(0, remaining)}s`, -width / 2 + 14, -height / 2 + 14);
   }
 
   if (countdown > 0) {
